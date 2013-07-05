@@ -1543,7 +1543,7 @@ const char*	 get_full_path(const char *, const char *);
 void		 setblocking(int, int);
 __dead void	 shell_exec(const char *, const char *);
 
-//extern char	 gasket_socket_path[MAXPATHLEN];
+extern char	 gasket_socket_path[MAXPATHLEN];
 
 /* cfg.c */
 extern struct cmd_q *cfg_cmd_q;

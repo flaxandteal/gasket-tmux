@@ -134,7 +134,7 @@ retry:
 		if (!start_server)
 			goto failed;
 		close(fds[0]);
-		close(fds[1]);
+		//close(fds[1]);
 
 		xasprintf(&lockfile, "%s.lock", path);
 		if ((lockfd = client_get_lock(lockfile)) == -1)
@@ -147,12 +147,12 @@ retry:
 	}
 
 	setblocking(fds[0], 0);
-	setblocking(fds[1], 0);
+	//setblocking(fds[1], 0);
 	return (0);
 
 failed:
 	close(fds[0]);
-	close(fds[1]);
+	//close(fds[1]);
 	return (-1);
 }
 
@@ -240,11 +240,11 @@ client_main(int argc, char **argv, int flags)
 	}
 
 	/* Initialise the client socket and start the server. */
-	//ccret = client_connect(fds, socket_path, gasket_socket_path, cmdflags & CMD_STARTSERVER);
-	//if (ccret == -1) {
-	//	fprintf(stderr, "failed to connect to server\n");
-	//	return (1);
-	//}
+	ccret = client_connect(fds, socket_path, gasket_socket_path, cmdflags & CMD_STARTSERVER);
+	if (ccret == -1) {
+		fprintf(stderr, "failed to connect to server\n");
+		return (1);
+	}
 
 	/* Set process title, log and signals now this is the client. */
 #ifdef HAVE_SETPROCTITLE

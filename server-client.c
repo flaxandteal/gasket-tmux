@@ -899,6 +899,22 @@ server_client_msg_dispatch(struct client *c)
 
 		log_debug("got %d from client %d", imsg.hdr.type, c->ibuf.fd);
 		switch (imsg.hdr.type) {
+		case MSG_COMMAND:
+			if (datalen != sizeof commanddata)
+				fatalx("bad MSG_COMMAND size");
+			memcpy(&commanddata, imsg.data, sizeof commanddata);
+
+			server_client_msg_command(c, &commanddata);
+			break;
+		case MSG_IDENTIFY:
+			if (datalen != sizeof identifydata)
+				fatalx("bad MSG_IDENTIFY size");
+			if (imsg.fd == -1)
+				fatalx("MSG_IDENTIFY missing fd");
+			memcpy(&identifydata, imsg.data, sizeof identifydata);
+
+			server_client_msg_identify(c, &identifydata, imsg.fd);
+			break;
 		case MSG_STDIN:
 			if (datalen != sizeof stdindata)
 				fatalx("bad MSG_STDIN size");
@@ -912,7 +928,63 @@ server_client_msg_dispatch(struct client *c)
 				evbuffer_add(c->stdin_data, stdindata.data,
 				    stdindata.size);
 			}
+			c->stdin_callback(c, c->stdin_closed,
+			    c->stdin_callback_data);
 			break;
+		case MSG_RESIZE:
+			if (datalen != 0)
+				fatalx("bad MSG_RESIZE size");
+
+			if (c->flags & CLIENT_CONTROL)
+				break;
+			if (tty_resize(&c->tty)) {
+				recalculate_sizes();
+				server_redraw_client(c);
+			}
+			break;
+		case MSG_EXITING:
+			if (datalen != 0)
+				fatalx("bad MSG_EXITING size");
+
+			c->session = NULL;
+			tty_close(&c->tty);
+			server_write_client(c, MSG_EXITED, NULL, 0);
+			break;
+		case MSG_WAKEUP:
+		case MSG_UNLOCK:
+			if (datalen != 0)
+				fatalx("bad MSG_WAKEUP size");
+
+			if (!(c->flags & CLIENT_SUSPENDED))
+				break;
+			c->flags &= ~CLIENT_SUSPENDED;
+
+			if (gettimeofday(&c->activity_time, NULL) != 0)
+				fatal("gettimeofday");
+			if (c->session != NULL)
+				session_update_activity(c->session);
+
+			tty_start_tty(&c->tty);
+			server_redraw_client(c);
+			recalculate_sizes();
+			break;
+		case MSG_ENVIRON:
+			if (datalen != sizeof environdata)
+				fatalx("bad MSG_ENVIRON size");
+			memcpy(&environdata, imsg.data, sizeof environdata);
+
+			environdata.var[(sizeof environdata.var) - 1] = '\0';
+			if (strchr(environdata.var, '=') != NULL)
+				environ_put(&c->environ, environdata.var);
+			break;
+		case MSG_SHELL:
+			if (datalen != 0)
+				fatalx("bad MSG_SHELL size");
+
+			server_client_msg_shell(c);
+			break;
+		default:
+			fatalx("unexpected message");
 		}
 
 		imsg_free(&imsg);
