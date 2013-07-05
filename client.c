@@ -36,6 +36,10 @@
 struct imsgbuf	client_ibuf;
 struct event	client_event;
 struct event	client_stdin;
+
+struct imsgbuf	gasket_client_ibuf;
+struct event	gasket_client_event;
+
 enum {
 	CLIENT_EXIT_NONE,
 	CLIENT_EXIT_DETACHED,
@@ -51,7 +55,7 @@ enum msgtype	client_exittype;
 int		client_attached;
 
 int		client_get_lock(char *);
-int		client_connect(char *, int);
+int		client_connect(int fds[], char *, char *, int);
 void		client_send_identify(int);
 void		client_send_environ(void);
 void		client_write_server(enum msgtype, void *, size_t);
@@ -63,6 +67,10 @@ void		client_callback(int, short, void *);
 int		client_dispatch_attached(void);
 int		client_dispatch_wait(void *);
 const char     *client_exit_message(void);
+
+int		gasket_client_dispatch_attached(void);
+int		gasket_client_dispatch_wait(void *);
+void		gasket_client_callback(int, short, void *);
 
 /*
  * Get server create lock. If already held then server start is happening in
@@ -90,11 +98,11 @@ client_get_lock(char *lockfile)
 
 /* Connect client to server. */
 int
-client_connect(char *path, int start_server)
+client_connect(int fds[], char *path, char *gasket_path, int start_server)
 {
-	struct sockaddr_un	sa;
-	size_t			size;
-	int			fd, lockfd;
+	struct sockaddr_un	sa, gasket_sa;
+	size_t			size, gasket_size;
+	int			lockfd;
 	char		       *lockfile;
 
 	memset(&sa, 0, sizeof sa);
@@ -105,32 +113,46 @@ client_connect(char *path, int start_server)
 		return (-1);
 	}
 
-retry:
-	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
-		fatal("socket failed");
+	//memset(&gasket_sa, 0, sizeof gasket_sa);
+	//gasket_sa.sun_family = AF_UNIX;
+	//gasket_size = strlcpy(gasket_sa.sun_path, gasket_path, sizeof gasket_sa.sun_path);
+	//if (gasket_size >= sizeof gasket_sa.sun_path) {
+	//	errno = ENAMETOOLONG;
+	//	return (-1);
+	//}
 
-	if (connect(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1) {
+retry:
+	if ((fds[0] = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+		fatal("socket failed");
+	//if ((fds[1] = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+	//	fatal("gasket socket failed");
+
+	if (connect(fds[0], (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1/* &&
+	    connect(fds[1], (struct sockaddr *) &gasket_sa, SUN_LEN(&gasket_sa)) == -1*/) {
 		if (errno != ECONNREFUSED && errno != ENOENT)
 			goto failed;
 		if (!start_server)
 			goto failed;
-		close(fd);
+		close(fds[0]);
+		close(fds[1]);
 
 		xasprintf(&lockfile, "%s.lock", path);
 		if ((lockfd = client_get_lock(lockfile)) == -1)
 			goto retry;
 		if (unlink(path) != 0 && errno != ENOENT)
 			return (-1);
-		fd = server_start(lockfd, lockfile);
+		server_start(fds, lockfd, lockfile);
 		free(lockfile);
 		close(lockfd);
 	}
 
-	setblocking(fd, 0);
-	return (fd);
+	setblocking(fds[0], 0);
+	setblocking(fds[1], 0);
+	return (0);
 
 failed:
-	close(fd);
+	close(fds[0]);
+	close(fds[1]);
 	return (-1);
 }
 
@@ -166,7 +188,7 @@ client_main(int argc, char **argv, int flags)
 	struct cmd		*cmd;
 	struct cmd_list		*cmdlist;
 	struct msg_command_data	 cmddata;
-	int			 cmdflags, fd;
+	int			 cmdflags, ccret, fds[2];
 	pid_t			 ppid;
 	enum msgtype		 msg;
 	char			*cause;
@@ -218,11 +240,11 @@ client_main(int argc, char **argv, int flags)
 	}
 
 	/* Initialise the client socket and start the server. */
-	fd = client_connect(socket_path, cmdflags & CMD_STARTSERVER);
-	if (fd == -1) {
-		fprintf(stderr, "failed to connect to server\n");
-		return (1);
-	}
+	//ccret = client_connect(fds, socket_path, gasket_socket_path, cmdflags & CMD_STARTSERVER);
+	//if (ccret == -1) {
+	//	fprintf(stderr, "failed to connect to server\n");
+	//	return (1);
+	//}
 
 	/* Set process title, log and signals now this is the client. */
 #ifdef HAVE_SETPROCTITLE
@@ -231,8 +253,10 @@ client_main(int argc, char **argv, int flags)
 	logfile("client");
 
 	/* Create imsg. */
-	imsg_init(&client_ibuf, fd);
-	event_set(&client_event, fd, EV_READ, client_callback, shell_cmd);
+	imsg_init(&client_ibuf, fds[0]);
+	event_set(&client_event, fds[0], EV_READ, client_callback, shell_cmd);
+	//imsg_init(&gasket_client_ibuf, fds[1]);
+	//event_set(&gasket_client_event, fds[1], EV_READ, gasket_client_callback, NULL);
 
 	/* Create stdin handler. */
 	setblocking(STDIN_FILENO, 0);
@@ -452,6 +476,40 @@ lost_server:
 	event_loopexit(NULL);
 }
 
+/* Callback for client imsg read events. */
+//void
+//gasket_client_callback(unused int fd, short events, void *data)
+//{
+//	ssize_t	n;
+//	int	retval;
+//
+//	if (events & EV_READ) {
+//		if ((n = imsg_read(&gasket_client_ibuf)) == -1 || n == 0)
+//			goto lost_server;
+//		if (client_attached)
+//			retval = gasket_client_dispatch_attached();
+//		else
+//			retval = gasket_client_dispatch_wait(data);
+//		if (retval != 0) {
+//			event_loopexit(NULL);
+//			return;
+//		}
+//	}
+//
+//	if (events & EV_WRITE) {
+//		if (msgbuf_write(&gasket_client_ibuf.w) < 0)
+//			goto lost_server;
+//	}
+//
+//	client_update_event();
+//	return;
+//
+//lost_server:
+//	client_exitreason = CLIENT_EXIT_LOST_SERVER;
+//	client_exitval = 1;
+//	event_loopexit(NULL);
+//}
+
 /* Callback for client stdin read events. */
 void
 client_stdin_callback(unused int fd, unused short events, unused void *data1)
@@ -537,6 +595,7 @@ client_dispatch_wait(void *data)
 				fatalx("bad MSG_STDOUT");
 			memcpy(&stdoutdata, imsg.data, sizeof stdoutdata);
 
+                        printf("XX%s", stdoutdata.data);
 			client_write(STDOUT_FILENO, stdoutdata.data, stdoutdata.size);
 			break;
 		case MSG_STDERR:
@@ -661,3 +720,179 @@ client_dispatch_attached(void)
 		imsg_free(&imsg);
 	}
 }
+
+/* Dispatch imsgs when in wait state (before MSG_READY). */
+//int
+//gasket_client_dispatch_wait(void *data)
+//{
+//	struct imsg		imsg;
+//	ssize_t			n, datalen;
+//	struct msg_shell_data	shelldata;
+//	struct msg_exit_data	exitdata;
+//	struct msg_stdout_data	stdoutdata;
+//	struct msg_stderr_data	stderrdata;
+//	const char             *shellcmd = data;
+//
+//	for (;;) {
+//		if ((n = imsg_get(&client_ibuf, &imsg)) == -1)
+//			fatalx("imsg_get failed");
+//		if (n == 0)
+//			return (0);
+//		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
+//
+//		log_debug("got %d from server", imsg.hdr.type);
+//		switch (imsg.hdr.type) {
+//		case MSG_EXIT:
+//		case MSG_SHUTDOWN:
+//			if (datalen != sizeof exitdata) {
+//				if (datalen != 0)
+//					fatalx("bad MSG_EXIT size");
+//			} else {
+//				memcpy(&exitdata, imsg.data, sizeof exitdata);
+//				client_exitval = exitdata.retcode;
+//			}
+//			imsg_free(&imsg);
+//			return (-1);
+//		case MSG_READY:
+//			if (datalen != 0)
+//				fatalx("bad MSG_READY size");
+//
+//			event_del(&client_stdin);
+//			client_attached = 1;
+//			client_write_server(MSG_RESIZE, NULL, 0);
+//			break;
+//		case MSG_STDIN:
+//			if (datalen != 0)
+//				fatalx("bad MSG_STDIN size");
+//
+//			event_add(&client_stdin, NULL);
+//			break;
+//		case MSG_STDOUT:
+//			if (datalen != sizeof stdoutdata)
+//				fatalx("bad MSG_STDOUT");
+//			memcpy(&stdoutdata, imsg.data, sizeof stdoutdata);
+//
+//			client_write(STDOUT_FILENO, stdoutdata.data, stdoutdata.size);
+//			break;
+//		case MSG_STDERR:
+//			if (datalen != sizeof stderrdata)
+//				fatalx("bad MSG_STDERR");
+//			memcpy(&stderrdata, imsg.data, sizeof stderrdata);
+//
+//			client_write(STDERR_FILENO, stderrdata.data, stderrdata.size);
+//			break;
+//		case MSG_VERSION:
+//			if (datalen != 0)
+//				fatalx("bad MSG_VERSION size");
+//
+//			fprintf(stderr, "protocol version mismatch "
+//			    "(client %u, server %u)\n", PROTOCOL_VERSION,
+//			    imsg.hdr.peerid);
+//			client_exitval = 1;
+//
+//			imsg_free(&imsg);
+//			return (-1);
+//		case MSG_SHELL:
+//			if (datalen != sizeof shelldata)
+//				fatalx("bad MSG_SHELL size");
+//			memcpy(&shelldata, imsg.data, sizeof shelldata);
+//			shelldata.shell[(sizeof shelldata.shell) - 1] = '\0';
+//
+//			clear_signals(0);
+//
+//			shell_exec(shelldata.shell, shellcmd);
+//			/* NOTREACHED */
+//		case MSG_DETACH:
+//			client_write_server(MSG_EXITING, NULL, 0);
+//			break;
+//		case MSG_EXITED:
+//			imsg_free(&imsg);
+//			return (-1);
+//		default:
+//			fatalx("unexpected message");
+//		}
+//
+//		imsg_free(&imsg);
+//	}
+//}
+
+/* Dispatch imsgs in attached state (after MSG_READY). */
+//int
+//gasket_client_dispatch_attached(void)
+//{
+//	struct imsg		imsg;
+//	struct msg_lock_data	lockdata;
+//	struct sigaction	sigact;
+//	ssize_t			n, datalen;
+//
+//	for (;;) {
+//		if ((n = imsg_get(&client_ibuf, &imsg)) == -1)
+//			fatalx("imsg_get failed");
+//		if (n == 0)
+//			return (0);
+//		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
+//
+//		log_debug("got %d from server", imsg.hdr.type);
+//		switch (imsg.hdr.type) {
+//		case MSG_DETACHKILL:
+//		case MSG_DETACH:
+//			if (datalen != 0)
+//				fatalx("bad MSG_DETACH size");
+//
+//			client_exittype = imsg.hdr.type;
+//			if (imsg.hdr.type == MSG_DETACHKILL)
+//				client_exitreason = CLIENT_EXIT_DETACHED_HUP;
+//			else
+//				client_exitreason = CLIENT_EXIT_DETACHED;
+//			client_write_server(MSG_EXITING, NULL, 0);
+//			break;
+//		case MSG_EXIT:
+//			if (datalen != 0 &&
+//			    datalen != sizeof (struct msg_exit_data))
+//				fatalx("bad MSG_EXIT size");
+//
+//			client_write_server(MSG_EXITING, NULL, 0);
+//			client_exitreason = CLIENT_EXIT_EXITED;
+//			break;
+//		case MSG_EXITED:
+//			if (datalen != 0)
+//				fatalx("bad MSG_EXITED size");
+//
+//			imsg_free(&imsg);
+//			return (-1);
+//		case MSG_SHUTDOWN:
+//			if (datalen != 0)
+//				fatalx("bad MSG_SHUTDOWN size");
+//
+//			client_write_server(MSG_EXITING, NULL, 0);
+//			client_exitreason = CLIENT_EXIT_SERVER_EXITED;
+//			client_exitval = 1;
+//			break;
+//		case MSG_SUSPEND:
+//			if (datalen != 0)
+//				fatalx("bad MSG_SUSPEND size");
+//
+//			memset(&sigact, 0, sizeof sigact);
+//			sigemptyset(&sigact.sa_mask);
+//			sigact.sa_flags = SA_RESTART;
+//			sigact.sa_handler = SIG_DFL;
+//			if (sigaction(SIGTSTP, &sigact, NULL) != 0)
+//				fatal("sigaction failed");
+//			kill(getpid(), SIGTSTP);
+//			break;
+//		case MSG_LOCK:
+//			if (datalen != sizeof lockdata)
+//				fatalx("bad MSG_LOCK size");
+//			memcpy(&lockdata, imsg.data, sizeof lockdata);
+//
+//			lockdata.cmd[(sizeof lockdata.cmd) - 1] = '\0';
+//			system(lockdata.cmd);
+//			client_write_server(MSG_UNLOCK, NULL, 0);
+//			break;
+//		default:
+//			fatalx("unexpected message");
+//		}
+//
+//		imsg_free(&imsg);
+//	}
+//}

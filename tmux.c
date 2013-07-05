@@ -396,6 +396,8 @@ main(int argc, char **argv)
 	strlcpy(socket_path, path, sizeof socket_path);
 	free(path);
 
+        gasket_init();
+
 #ifdef HAVE_SETPROCTITLE
 	/* Set process title. */
 	setproctitle("%s (%s)", __progname, socket_path);

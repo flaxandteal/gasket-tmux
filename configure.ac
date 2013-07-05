@@ -132,6 +132,28 @@ if test "x$found_libevent" = xno; then
 	AC_MSG_ERROR("libevent not found")
 fi
 
+# Look for libevent.
+PKG_CHECK_MODULES(
+	UUID,
+	uuid,
+	[
+		CPPFLAGS="$UUID_CFLAGS $CPPFLAGS"
+		LIBS="$UUID_LIBS $LIBS"
+		found_libevent=yes
+	],
+	[
+		AC_SEARCH_LIBS(
+			uuid_generate,
+			[uuid],
+			found_uuid=yes,
+			found_uuid=no
+		)
+	]
+)
+if test "x$found_uuid" = xno; then
+	AC_MSG_ERROR("libuuid not found")
+fi
+
 # Look for curses.
 AC_SEARCH_LIBS(
 	setupterm,

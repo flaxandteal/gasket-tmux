@@ -7,7 +7,7 @@ CLEANFILES = tmux.1.mdoc tmux.1.man
 # Distribution tarball options.
 EXTRA_DIST = \
 	CHANGES FAQ README TODO COPYING examples compat \
-	array.h compat.h tmux.h osdep-*.c mdoc2man.awk tmux.1
+	array.h compat.h gasket.h tmux.h osdep-*.c mdoc2man.awk tmux.1
 dist-hook:
 	grep "^#found_debug=" configure
 	find $(distdir) -name .svn -type d|xargs rm -Rf
@@ -146,6 +146,7 @@ dist_tmux_SOURCES = \
 	control-notify.c \
 	environ.c \
 	format.c \
+	gasket.c \
 	grid-cell.c \
 	grid-view.c \
 	grid.c \

@@ -18,6 +18,9 @@
 
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -28,6 +31,7 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include <uuid/uuid.h>
 
 #include "tmux.h"
 
@@ -61,6 +65,8 @@ u_int	next_window_id;
 void	window_pane_timer_callback(int, short, void *);
 void	window_pane_read_callback(struct bufferevent *, void *);
 void	window_pane_error_callback(struct bufferevent *, short, void *);
+
+void    gasket_window_pane_read_callback(unused struct bufferevent *bufev, void *data);
 
 RB_GENERATE(winlinks, winlink, entry, winlink_cmp);
 
@@ -691,6 +697,11 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	wp->pipe_off = 0;
 	wp->pipe_event = NULL;
 
+        //wp->gasket_pipe_fd = -1;
+        //wp->gasket_pipe_off = 0;
+        //wp->gasket_pipe_event = NULL;
+        //wp->gasket_event = NULL;
+
 	wp->saved_grid = NULL;
 
 	screen_init(&wp->base, sx, sy, hlimit);
@@ -714,6 +725,11 @@ window_pane_destroy(struct window_pane *wp)
 		close(wp->fd);
 	}
 
+	//if (wp->gasket_fd != -1) {
+	//	bufferevent_free(wp->gasket_event);
+	//	close(wp->gasket_fd);
+	//}
+
 	input_free(wp);
 
 	screen_free(&wp->base);
@@ -725,6 +741,11 @@ window_pane_destroy(struct window_pane *wp)
 		close(wp->pipe_fd);
 	}
 
+	//if (wp->gasket_pipe_fd != -1) {
+	//	bufferevent_free(wp->gasket_pipe_event);
+	//	close(wp->gasket_pipe_fd);
+	//}
+
 	RB_REMOVE(window_pane_tree, &all_window_panes, wp);
 
 	free(wp->cwd);
@@ -732,6 +753,65 @@ window_pane_destroy(struct window_pane *wp)
 	free(wp->cmd);
 	free(wp);
 }
+//
+//int
+//gasket_window_pane_open(struct window_pane *wp)
+//{
+//	char uuid_str[300];
+//        uuid_t uuid;
+//
+//	struct sockaddr_un	sa;
+//	size_t			size;
+//	mode_t			mask;
+//	int			fd;
+//
+//	uuid_generate(uuid);
+//        uuid_unparse(uuid, wp->gasket_id);
+//
+//        char gasket_directory[MAXPATHLEN];
+//
+//        xsnprintf(gasket_directory, sizeof gasket_directory,
+//                "/tmp/gasket-tmux-wp%d/",
+//                wp->id);
+//
+//        if (mkdir(gasket_directory, S_IRWXU) == -1 && errno != EEXIST)
+//        {
+//                fatal("mkdir (socket tmp) failed");
+//        }
+//
+//        xsnprintf(wp->gasket_socket, sizeof wp->gasket_socket,
+//                "%sgasket_track_%s.sock",
+//                gasket_directory,
+//                wp->gasket_id);
+//
+//	memset(&sa, 0, sizeof sa);
+//	sa.sun_family = AF_UNIX;
+//	size = strlcpy(sa.sun_path, wp->gasket_socket, sizeof sa.sun_path);
+//	if (size >= sizeof sa.sun_path) {
+//		errno = ENAMETOOLONG;
+//		fatal("socket failed");
+//	}
+//	unlink(sa.sun_path);
+//
+//	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+//		fatal("socket failed");
+//        return 0;
+//
+//	mask = umask(S_IXUSR|S_IXGRP|S_IRWXO);
+//	if (bind(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1)
+//		fatal("bind failed");
+//	umask(mask);
+//
+//	if (listen(fd, 16) == -1)
+//		fatal("listen failed");
+//	setblocking(fd, 0);
+//
+//	wp->gasket_event = bufferevent_new(wp->gasket_fd,
+//	    gasket_window_pane_read_callback, NULL, NULL, wp);
+//	bufferevent_enable(wp->gasket_event, EV_READ);
+//
+//	return (fd);
+//}
 
 int
 window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
@@ -746,6 +826,10 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 		bufferevent_free(wp->event);
 		close(wp->fd);
 	}
+	//if (wp->gasket_fd != -1) {
+	//	bufferevent_free(wp->gasket_event);
+	//	close(wp->gasket_fd);
+	//}
 	if (cmd != NULL) {
 		free(wp->cmd);
 		wp->cmd = xstrdup(cmd);
@@ -764,6 +848,8 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 	memset(&ws, 0, sizeof ws);
 	ws.ws_col = screen_size_x(&wp->base);
 	ws.ws_row = screen_size_y(&wp->base);
+
+        //wp->gasket_fd = gasket_window_pane_open(wp);
 
 	switch (wp->pid = forkpty(&wp->fd, wp->tty, NULL, &ws)) {
 	case -1:
@@ -790,6 +876,8 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 
 		xsnprintf(paneid, sizeof paneid, "%%%u", wp->id);
 		environ_set(env, "TMUX_PANE", paneid);
+		//environ_set(env, "GASKET_ID", wp->gasket_id);
+		//environ_set(env, "GASKET_SOCKET", wp->gasket_socket);
 		environ_push(env);
 
 		clear_signals(1);
@@ -861,6 +949,20 @@ window_pane_timer_callback(unused int fd, unused short events, void *data)
 	} else
 		window_pane_timer_start(wp);
 	wp->changes = 0;
+}
+
+void
+gasket_window_pane_read_callback(unused struct bufferevent *bufev, void *data)
+{
+	struct window_pane     *wp = data;
+	char   		       *new_data;
+	size_t			new_size;
+
+	struct evbuffer			*evb = wp->event->input;
+
+	//gasket_notify_input(wp, evb);
+
+	//wp->gasket_pipe_off = EVBUFFER_LENGTH(wp->gasket_event->input);
 }
 
 void

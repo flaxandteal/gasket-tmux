@@ -45,6 +45,8 @@ void	server_client_msg_identify(
 	    struct client *, struct msg_identify_data *, int);
 void	server_client_msg_shell(struct client *);
 
+int	gasket_server_client_msg_dispatch(struct client *);
+
 /* Create a new client. */
 void
 server_client_create(int fd)
@@ -69,6 +71,7 @@ server_client_create(int fd)
 	c->stdin_data = evbuffer_new ();
 	c->stdout_data = evbuffer_new ();
 	c->stderr_data = evbuffer_new ();
+	//c->gasket_data = evbuffer_new ();
 
 	c->tty.fd = -1;
 	c->title = NULL;
@@ -109,6 +112,15 @@ server_client_create(int fd)
 	ARRAY_ADD(&clients, c);
 	log_debug("new client %d", fd);
 }
+
+//void
+//gasket_server_client_create(int fd)
+//{
+//	struct client	*c;
+//	u_int		 i;
+//
+//	imsg_init(&c->ibuf, fd);
+//}
 
 /* Open client terminal if needed. */
 int
@@ -154,6 +166,7 @@ server_client_lost(struct client *c)
 
 	evbuffer_free (c->stdin_data);
 	evbuffer_free (c->stdout_data);
+	//evbuffer_free (c->gasket_data);
 	if (c->stderr_data != c->stdout_data)
 		evbuffer_free (c->stderr_data);
 
@@ -208,6 +221,50 @@ server_client_lost(struct client *c)
 	server_check_unattached();
 	server_update_socket();
 }
+
+/* Process a single client event. */
+//void
+//gasket_server_client_callback(int fd, short events, void *data)
+//{
+//	struct client	*c = data;
+//
+//	if (c->flags & CLIENT_DEAD)
+//		return;
+//
+//	if (fd == c->gasket_ibuf.fd) {
+//		if (events & EV_WRITE && msgbuf_write(&c->gasket_ibuf.w) < 0)
+//			goto client_lost;
+//
+//                int n;
+//                if ((n = sendmsg(c->gasket_ibuf.fd, data, strlen((char*)data))) == -1) {
+//                        if (errno != EAGAIN && errno != ENOBUFS ||
+//                            errno != EINTR)	/* try later */
+//                                goto client_lost;
+//                }
+//
+//                if (n == 0) {			/* connection closed */
+//                        errno = 0;
+//                        goto client_lost;
+//                }
+//
+//                /*
+//                 * assumption: fd got sent if sendmsg sent anything
+//                 * this works because fds are passed one at a time
+//                 */
+//                if (c->gasket_ibuf.fd != -1) {
+//                        close(c->gasket_ibuf.fd);
+//                        c->gasket_ibuf.fd = -1;
+//                }
+//	}
+//
+//	server_push_gasket(c);
+//
+//	gasket_server_update_event(c);
+//	return;
+//
+//client_lost:
+//	server_client_lost(c);
+//}
 
 /* Process a single client event. */
 void
@@ -706,6 +763,8 @@ server_client_check_exit(struct client *c)
 		return;
 	if (EVBUFFER_LENGTH(c->stderr_data) != 0)
 		return;
+	//if (EVBUFFER_LENGTH(c->gasket_data) != 0)
+	//	return;
 
 	exitdata.retcode = c->retcode;
 	server_write_client(c, MSG_EXIT, &exitdata, sizeof exitdata);
@@ -786,6 +845,31 @@ server_client_set_title(struct client *c)
 }
 
 /* Dispatch message from client. */
+//int
+//gasket_server_client_msg_dispatch(struct client *c)
+//{
+//	struct imsg		 imsg;
+//	struct msg_command_data	 commanddata;
+//	struct msg_identify_data identifydata;
+//	struct msg_environ_data	 environdata;
+//	struct msg_stdin_data	 stdindata;
+//	ssize_t			 n, datalen;
+//
+//	if ((n = imsg_read(&c->gasket_ibuf)) == -1 || n == 0)
+//		return (-1);
+//
+//	for (;;) {
+//		if ((n = imsg_get(&c->gasket_ibuf, &imsg)) == -1)
+//			return (-1);
+//		if (n == 0)
+//			return (0);
+//		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
+//
+//		printf("got %d from client %d", imsg.hdr.type, c->ibuf.fd);
+//	}
+//}
+
+/* Dispatch message from client. */
 int
 server_client_msg_dispatch(struct client *c)
 {
@@ -815,22 +899,6 @@ server_client_msg_dispatch(struct client *c)
 
 		log_debug("got %d from client %d", imsg.hdr.type, c->ibuf.fd);
 		switch (imsg.hdr.type) {
-		case MSG_COMMAND:
-			if (datalen != sizeof commanddata)
-				fatalx("bad MSG_COMMAND size");
-			memcpy(&commanddata, imsg.data, sizeof commanddata);
-
-			server_client_msg_command(c, &commanddata);
-			break;
-		case MSG_IDENTIFY:
-			if (datalen != sizeof identifydata)
-				fatalx("bad MSG_IDENTIFY size");
-			if (imsg.fd == -1)
-				fatalx("MSG_IDENTIFY missing fd");
-			memcpy(&identifydata, imsg.data, sizeof identifydata);
-
-			server_client_msg_identify(c, &identifydata, imsg.fd);
-			break;
 		case MSG_STDIN:
 			if (datalen != sizeof stdindata)
 				fatalx("bad MSG_STDIN size");
@@ -844,63 +912,7 @@ server_client_msg_dispatch(struct client *c)
 				evbuffer_add(c->stdin_data, stdindata.data,
 				    stdindata.size);
 			}
-			c->stdin_callback(c, c->stdin_closed,
-			    c->stdin_callback_data);
 			break;
-		case MSG_RESIZE:
-			if (datalen != 0)
-				fatalx("bad MSG_RESIZE size");
-
-			if (c->flags & CLIENT_CONTROL)
-				break;
-			if (tty_resize(&c->tty)) {
-				recalculate_sizes();
-				server_redraw_client(c);
-			}
-			break;
-		case MSG_EXITING:
-			if (datalen != 0)
-				fatalx("bad MSG_EXITING size");
-
-			c->session = NULL;
-			tty_close(&c->tty);
-			server_write_client(c, MSG_EXITED, NULL, 0);
-			break;
-		case MSG_WAKEUP:
-		case MSG_UNLOCK:
-			if (datalen != 0)
-				fatalx("bad MSG_WAKEUP size");
-
-			if (!(c->flags & CLIENT_SUSPENDED))
-				break;
-			c->flags &= ~CLIENT_SUSPENDED;
-
-			if (gettimeofday(&c->activity_time, NULL) != 0)
-				fatal("gettimeofday");
-			if (c->session != NULL)
-				session_update_activity(c->session);
-
-			tty_start_tty(&c->tty);
-			server_redraw_client(c);
-			recalculate_sizes();
-			break;
-		case MSG_ENVIRON:
-			if (datalen != sizeof environdata)
-				fatalx("bad MSG_ENVIRON size");
-			memcpy(&environdata, imsg.data, sizeof environdata);
-
-			environdata.var[(sizeof environdata.var) - 1] = '\0';
-			if (strchr(environdata.var, '=') != NULL)
-				environ_put(&c->environ, environdata.var);
-			break;
-		case MSG_SHELL:
-			if (datalen != 0)
-				fatalx("bad MSG_SHELL size");
-
-			server_client_msg_shell(c);
-			break;
-		default:
-			fatalx("unexpected message");
 		}
 
 		imsg_free(&imsg);
