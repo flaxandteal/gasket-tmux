@@ -45,8 +45,6 @@ void	server_client_msg_identify(
 	    struct client *, struct msg_identify_data *, int);
 void	server_client_msg_shell(struct client *);
 
-int	gasket_server_client_msg_dispatch(struct client *);
-
 /* Create a new client. */
 void
 server_client_create(int fd)
@@ -71,7 +69,7 @@ server_client_create(int fd)
 	c->stdin_data = evbuffer_new ();
 	c->stdout_data = evbuffer_new ();
 	c->stderr_data = evbuffer_new ();
-	//c->gasket_data = evbuffer_new ();
+	c->gasket_data = evbuffer_new ();
 
 	c->tty.fd = -1;
 	c->title = NULL;
@@ -113,14 +111,14 @@ server_client_create(int fd)
 	log_debug("new client %d", fd);
 }
 
-//void
-//gasket_server_client_create(int fd)
-//{
-//	struct client	*c;
-//	u_int		 i;
-//
-//	imsg_init(&c->ibuf, fd);
-//}
+void
+gasket_server_client_create(int fd)
+{
+	struct client	*c;
+	u_int		 i;
+
+	c->gasket_fd = fd;
+}
 
 /* Open client terminal if needed. */
 int
@@ -166,7 +164,7 @@ server_client_lost(struct client *c)
 
 	evbuffer_free (c->stdin_data);
 	evbuffer_free (c->stdout_data);
-	//evbuffer_free (c->gasket_data);
+	evbuffer_free (c->gasket_data);
 	if (c->stderr_data != c->stdout_data)
 		evbuffer_free (c->stderr_data);
 
@@ -223,48 +221,45 @@ server_client_lost(struct client *c)
 }
 
 /* Process a single client event. */
-//void
-//gasket_server_client_callback(int fd, short events, void *data)
-//{
-//	struct client	*c = data;
-//
-//	if (c->flags & CLIENT_DEAD)
-//		return;
-//
-//	if (fd == c->gasket_ibuf.fd) {
-//		if (events & EV_WRITE && msgbuf_write(&c->gasket_ibuf.w) < 0)
-//			goto client_lost;
-//
-//                int n;
-//                if ((n = sendmsg(c->gasket_ibuf.fd, data, strlen((char*)data))) == -1) {
-//                        if (errno != EAGAIN && errno != ENOBUFS ||
-//                            errno != EINTR)	/* try later */
-//                                goto client_lost;
-//                }
-//
-//                if (n == 0) {			/* connection closed */
-//                        errno = 0;
-//                        goto client_lost;
-//                }
-//
-//                /*
-//                 * assumption: fd got sent if sendmsg sent anything
-//                 * this works because fds are passed one at a time
-//                 */
-//                if (c->gasket_ibuf.fd != -1) {
-//                        close(c->gasket_ibuf.fd);
-//                        c->gasket_ibuf.fd = -1;
-//                }
-//	}
-//
-//	server_push_gasket(c);
-//
-//	gasket_server_update_event(c);
-//	return;
-//
-//client_lost:
-//	server_client_lost(c);
-//}
+void
+gasket_server_client_callback(int fd, short events, void *data)
+{
+	struct client	*c = data;
+
+	if (c->flags & CLIENT_DEAD)
+		return;
+
+	//if (fd == c->gasket_ibuf.fd) {
+                int n;
+                if ((n = sendto(c->gasket_fd, data, strlen((char*)data), 0, NULL, 0)) == -1) {
+                        if (errno != EAGAIN && errno != ENOBUFS ||
+                            errno != EINTR)	/* try later */
+                                goto client_lost;
+                }
+
+                if (n == 0) {			/* connection closed */
+                        errno = 0;
+                        goto client_lost;
+                }
+
+                /*
+                 * assumption: fd got sent if sendmsg sent anything
+                 * this works because fds are passed one at a time
+                 */
+                //if (c->gasket_ibuf.fd != -1) {
+                //        close(c->gasket_ibuf.fd);
+                //        c->gasket_ibuf.fd = -1;
+                //}
+	//}
+
+	//server_push_gasket(c);
+
+	//gasket_server_update_event(c);
+	return;
+
+client_lost:
+	server_client_lost(c);
+}
 
 /* Process a single client event. */
 void
@@ -843,31 +838,6 @@ server_client_set_title(struct client *c)
 	}
 	free(title);
 }
-
-/* Dispatch message from client. */
-//int
-//gasket_server_client_msg_dispatch(struct client *c)
-//{
-//	struct imsg		 imsg;
-//	struct msg_command_data	 commanddata;
-//	struct msg_identify_data identifydata;
-//	struct msg_environ_data	 environdata;
-//	struct msg_stdin_data	 stdindata;
-//	ssize_t			 n, datalen;
-//
-//	if ((n = imsg_read(&c->gasket_ibuf)) == -1 || n == 0)
-//		return (-1);
-//
-//	for (;;) {
-//		if ((n = imsg_get(&c->gasket_ibuf, &imsg)) == -1)
-//			return (-1);
-//		if (n == 0)
-//			return (0);
-//		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
-//
-//		printf("got %d from client %d", imsg.hdr.type, c->ibuf.fd);
-//	}
-//}
 
 /* Dispatch message from client. */
 int

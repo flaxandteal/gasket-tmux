@@ -34,6 +34,7 @@
 #include "tmux.h"
 
 struct imsgbuf	client_ibuf;
+int    	        gasket_client_fd;
 struct event	client_event;
 struct event	client_stdin;
 
@@ -113,22 +114,22 @@ client_connect(int fds[], char *path, char *gasket_path, int start_server)
 		return (-1);
 	}
 
-	//memset(&gasket_sa, 0, sizeof gasket_sa);
-	//gasket_sa.sun_family = AF_UNIX;
-	//gasket_size = strlcpy(gasket_sa.sun_path, gasket_path, sizeof gasket_sa.sun_path);
-	//if (gasket_size >= sizeof gasket_sa.sun_path) {
-	//	errno = ENAMETOOLONG;
-	//	return (-1);
-	//}
+	memset(&gasket_sa, 0, sizeof gasket_sa);
+	gasket_sa.sun_family = AF_UNIX;
+	gasket_size = strlcpy(gasket_sa.sun_path, gasket_path, sizeof gasket_sa.sun_path);
+	if (gasket_size >= sizeof gasket_sa.sun_path) {
+		errno = ENAMETOOLONG;
+		return (-1);
+	}
 
 retry:
 	if ((fds[0] = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		fatal("socket failed");
-	//if ((fds[1] = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
-	//	fatal("gasket socket failed");
+	if ((fds[1] = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+		fatal("gasket socket failed");
 
-	if (connect(fds[0], (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1/* &&
-	    connect(fds[1], (struct sockaddr *) &gasket_sa, SUN_LEN(&gasket_sa)) == -1*/) {
+	if (connect(fds[0], (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1 &&
+	    connect(fds[1], (struct sockaddr *) &gasket_sa, SUN_LEN(&gasket_sa)) == -1) {
 		if (errno != ECONNREFUSED && errno != ENOENT)
 			goto failed;
 		if (!start_server)
@@ -255,8 +256,8 @@ client_main(int argc, char **argv, int flags)
 	/* Create imsg. */
 	imsg_init(&client_ibuf, fds[0]);
 	event_set(&client_event, fds[0], EV_READ, client_callback, shell_cmd);
-	//imsg_init(&gasket_client_ibuf, fds[1]);
-	//event_set(&gasket_client_event, fds[1], EV_READ, gasket_client_callback, NULL);
+	gasket_client_fd = fds[1];
+	event_set(&gasket_client_event, fds[1], EV_READ, gasket_client_callback, NULL);
 
 	/* Create stdin handler. */
 	setblocking(STDIN_FILENO, 0);
@@ -477,38 +478,42 @@ lost_server:
 }
 
 /* Callback for client imsg read events. */
-//void
-//gasket_client_callback(unused int fd, short events, void *data)
-//{
-//	ssize_t	n;
-//	int	retval;
-//
-//	if (events & EV_READ) {
-//		if ((n = imsg_read(&gasket_client_ibuf)) == -1 || n == 0)
-//			goto lost_server;
-//		if (client_attached)
-//			retval = gasket_client_dispatch_attached();
-//		else
-//			retval = gasket_client_dispatch_wait(data);
-//		if (retval != 0) {
-//			event_loopexit(NULL);
-//			return;
-//		}
-//	}
-//
-//	if (events & EV_WRITE) {
-//		if (msgbuf_write(&gasket_client_ibuf.w) < 0)
-//			goto lost_server;
-//	}
-//
-//	client_update_event();
-//	return;
-//
-//lost_server:
-//	client_exitreason = CLIENT_EXIT_LOST_SERVER;
-//	client_exitval = 1;
-//	event_loopexit(NULL);
-//}
+void
+gasket_client_callback(unused int fd, short events, void *data)
+{
+	ssize_t	n;
+	int	retval;
+	char	buf[CMSG_SPACE(sizeof(int) * 16)];
+
+	if (events & EV_READ) {
+                if ((n = recvfrom(gasket_client_fd, buf, sizeof(buf), 0, NULL, NULL)) == -1) {
+                        if (errno != EINTR && errno != EAGAIN) {
+                                goto lost_server;
+                        }
+                }
+		if (client_attached)
+			retval = gasket_client_dispatch_attached();
+		else
+			retval = gasket_client_dispatch_wait(data);
+		if (retval != 0) {
+			event_loopexit(NULL);
+			return;
+		}
+	}
+
+	if (events & EV_WRITE) {
+		if (msgbuf_write(&gasket_client_ibuf.w) < 0)
+			goto lost_server;
+	}
+
+	client_update_event();
+	return;
+
+lost_server:
+	client_exitreason = CLIENT_EXIT_LOST_SERVER;
+	client_exitval = 1;
+	event_loopexit(NULL);
+}
 
 /* Callback for client stdin read events. */
 void
@@ -722,9 +727,10 @@ client_dispatch_attached(void)
 }
 
 /* Dispatch imsgs when in wait state (before MSG_READY). */
-//int
-//gasket_client_dispatch_wait(void *data)
-//{
+int
+gasket_client_dispatch_wait(void *data)
+{
+}
 //	struct imsg		imsg;
 //	ssize_t			n, datalen;
 //	struct msg_shell_data	shelldata;
@@ -817,9 +823,10 @@ client_dispatch_attached(void)
 //}
 
 /* Dispatch imsgs in attached state (after MSG_READY). */
-//int
-//gasket_client_dispatch_attached(void)
-//{
+int
+gasket_client_dispatch_attached(void)
+{
+}
 //	struct imsg		imsg;
 //	struct msg_lock_data	lockdata;
 //	struct sigaction	sigact;

@@ -52,7 +52,7 @@ struct event	 server_ev_second;
 
 struct paste_stack global_buffers;
 
-//int		 gasket_server_fd;
+int		 gasket_server_fd;
 
 int		 server_create_socket(void);
 void		 server_loop(void);
@@ -68,7 +68,7 @@ void		 server_second_callback(int, short, void *);
 void		 server_lock_server(void);
 void		 server_lock_sessions(void);
 
-//int		 gasket_server_create_socket(void);
+int		 gasket_server_create_socket(void);
 
 /* Create server socket. */
 int
@@ -106,54 +106,54 @@ server_create_socket(void)
 }
 
 /* Create Gasket server socket. */
-//int
-//gasket_server_create_socket(void)
-//{
-//	struct sockaddr_un	sa;
-//	size_t			size;
-//	mode_t			mask;
-//	int			fd;
-//
-//	memset(&sa, 0, sizeof sa);
-//	sa.sun_family = AF_UNIX;
-//	size = strlcpy(sa.sun_path, gasket_socket_path, sizeof sa.sun_path);
-//	if (size >= sizeof sa.sun_path) {
-//		errno = ENAMETOOLONG;
-//		fatal("socket failed");
-//	}
-//	unlink(sa.sun_path);
-//
-//	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
-//		fatal("socket failed");
-//
-//	mask = umask(S_IXUSR|S_IXGRP|S_IRWXO);
-//	if (bind(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1)
-//		fatal("bind failed");
-//	umask(mask);
-//
-//	if (listen(fd, 16) == -1)
-//		fatal("listen failed");
-//	setblocking(fd, 0);
-//
-//	gasket_server_update_socket();
-//
-//	return (fd);
-//}
+int
+gasket_server_create_socket(void)
+{
+	struct sockaddr_un	sa;
+	size_t			size;
+	mode_t			mask;
+	int			fd;
+
+	memset(&sa, 0, sizeof sa);
+	sa.sun_family = AF_UNIX;
+	size = strlcpy(sa.sun_path, gasket_socket_path, sizeof sa.sun_path);
+	if (size >= sizeof sa.sun_path) {
+		errno = ENAMETOOLONG;
+		fatal("socket failed");
+	}
+	unlink(sa.sun_path);
+
+	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+		fatal("socket failed");
+
+	mask = umask(S_IXUSR|S_IXGRP|S_IRWXO);
+	if (bind(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1)
+		fatal("bind failed");
+	umask(mask);
+
+	if (listen(fd, 16) == -1)
+		fatal("listen failed");
+	setblocking(fd, 0);
+
+	gasket_server_update_socket();
+
+	return (fd);
+}
 
 /* Fork new server. */
 void
 server_start(int fds[], int lockfd, char *lockfile)
 {
 	int	 	 pair[2];
-	//int	 	 gasket_pair[2];
+	int	 	 gasket_pair[2];
 	struct timeval	 tv;
 	char		*cause;
 
 	/* The first client is special and gets a socketpair; create it. */
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, pair) != 0)
 		fatal("socketpair failed");
-	//if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, gasket_pair) != 0)
-	//	fatal("gasket socketpair failed");
+	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, gasket_pair) != 0)
+		fatal("gasket socketpair failed");
 
 	switch (fork()) {
 	case -1:
@@ -162,13 +162,13 @@ server_start(int fds[], int lockfd, char *lockfile)
 		break;
 	default:
 		close(pair[1]);
-		//close(gasket_pair[1]);
+		close(gasket_pair[1]);
                 fds[0] = pair[0];
-                //fds[1] = gasket_pair[0];
+                fds[1] = gasket_pair[0];
 		return;
 	}
 	close(pair[0]);
-	//close(gasket_pair[0]);
+	close(gasket_pair[0]);
 
 	/*
 	 * Must daemonise before loading configuration as the PID changes so
@@ -204,8 +204,9 @@ server_start(int fds[], int lockfd, char *lockfile)
 #endif
 
 	server_fd = server_create_socket();
-	//gasket_server_fd = gasket_server_create_socket();
+	gasket_server_fd = gasket_server_create_socket();
 	server_client_create(pair[1]);
+	gasket_server_client_create(gasket_pair[1]);
 
 	unlink(lockfile);
 	free(lockfile);
@@ -334,40 +335,40 @@ server_clean_dead(void)
 }
 
 /* Update socket execute permissions based on whether sessions are attached. */
-//void
-//gasket_server_update_socket(void)
-//{
-//	struct session	*s;
-//	static int	 last = -1;
-//	int		 n, mode;
-//	struct stat      sb;
-//
-//	n = 0;
-//	RB_FOREACH(s, sessions, &sessions) {
-//		if (!(s->flags & SESSION_UNATTACHED)) {
-//			n++;
-//			break;
-//		}
-//	}
-//
-//	if (n != last) {
-//		last = n;
-//
-//		if (stat(gasket_socket_path, &sb) != 0)
-//			return;
-//		mode = sb.st_mode;
-//		if (n != 0) {
-//			if (mode & S_IRUSR)
-//				mode |= S_IXUSR;
-//			if (mode & S_IRGRP)
-//				mode |= S_IXGRP;
-//			if (mode & S_IROTH)
-//				mode |= S_IXOTH;
-//		} else
-//			mode &= ~(S_IXUSR|S_IXGRP|S_IXOTH);
-//		chmod(gasket_socket_path, mode);
-//	}
-//}
+void
+gasket_server_update_socket(void)
+{
+	struct session	*s;
+	static int	 last = -1;
+	int		 n, mode;
+	struct stat      sb;
+
+	n = 0;
+	RB_FOREACH(s, sessions, &sessions) {
+		if (!(s->flags & SESSION_UNATTACHED)) {
+			n++;
+			break;
+		}
+	}
+
+	if (n != last) {
+		last = n;
+
+		if (stat(gasket_socket_path, &sb) != 0)
+			return;
+		mode = sb.st_mode;
+		if (n != 0) {
+			if (mode & S_IRUSR)
+				mode |= S_IXUSR;
+			if (mode & S_IRGRP)
+				mode |= S_IXGRP;
+			if (mode & S_IROTH)
+				mode |= S_IXOTH;
+		} else
+			mode &= ~(S_IXUSR|S_IXGRP|S_IXOTH);
+		chmod(gasket_socket_path, mode);
+	}
+}
 
 /* Update socket execute permissions based on whether sessions are attached. */
 void

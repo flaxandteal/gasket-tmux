@@ -41,12 +41,12 @@ control_write(struct client *c, const char *fmt, ...)
 }
 
 /* Write a buffer to Gasket, adding a terminal newline. Empties buffer. */
-//void
-//gasket_control_write_buffer(struct client *c, struct evbuffer *buffer)
-//{
-//	evbuffer_add_buffer(c->gasket_data, buffer);
-//	server_push_gasket(c);
-//}
+void
+gasket_control_write_buffer(struct client *c, struct evbuffer *buffer)
+{
+	evbuffer_add_buffer(c->gasket_data, buffer);
+	server_push_gasket(c);
+}
 
 /* Write a buffer, adding a terminal newline. Empties buffer. */
 void

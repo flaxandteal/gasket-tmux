@@ -970,13 +970,13 @@ struct window_pane {
 	const struct window_mode *mode;
 	void		*modedata;
 
-        //int              gasket_pipe_fd;
-        //size_t           gasket_pipe_off;
-	//struct bufferevent *gasket_pipe_event;
-        //char             gasket_id[MAXPATHLEN];
-        //char             gasket_socket[MAXPATHLEN];
-        //int              gasket_fd;
-	//struct bufferevent *gasket_event;
+        int              gasket_pipe_fd;
+        size_t           gasket_pipe_off;
+	struct bufferevent *gasket_pipe_event;
+        char             gasket_id[MAXPATHLEN];
+        char             gasket_socket[MAXPATHLEN];
+        int              gasket_fd;
+	struct bufferevent *gasket_event;
 
 	TAILQ_ENTRY(window_pane) entry;
 	RB_ENTRY(window_pane) tree_entry;
@@ -1313,10 +1313,10 @@ struct client {
 	struct evbuffer	*stdout_data;
 	struct evbuffer	*stderr_data;
 
-	//void		(*gasket_callback)(struct client *, int, void *);
-	//struct event	 gasket_event;
-	//struct imsgbuf	 gasket_ibuf;
-        //struct evbuffer *gasket_data;
+	void		(*gasket_callback)(struct client *, int, void *);
+	struct event	 gasket_event;
+        struct evbuffer *gasket_data;
+        int              gasket_fd;
 
 	struct event	 repeat_timer;
 
@@ -1602,7 +1602,7 @@ void	notify_session_renamed(struct session *);
 void	notify_session_created(struct session *);
 void	notify_session_closed(struct session *);
 
-//void    gasket_notify_input(struct window_pane *wp, struct evbuffer *input);
+void    gasket_notify_input(struct window_pane *wp, struct evbuffer *input);
 
 /* options.c */
 int	options_cmp(struct options_entry *, struct options_entry *);
@@ -1916,7 +1916,7 @@ void     server_start(int[], int, char *);
 void	 server_update_socket(void);
 void	 server_add_accept(int);
 
-//void	 gasket_server_update_socket(void);
+void	 gasket_server_update_socket(void);
 
 /* server-client.c */
 void	 server_client_handle_key(struct client *, int);
@@ -1927,8 +1927,8 @@ void	 server_client_callback(int, short, void *);
 void	 server_client_status_timer(void);
 void	 server_client_loop(void);
 
-//void	 gasket_server_client_create(int);
-//void	 gasket_server_client_callback(int, short, void *);
+void	 gasket_server_client_create(int);
+void	 gasket_server_client_callback(int, short, void *);
 
 /* server-window.c */
 void	 server_window_loop(void);
@@ -1970,8 +1970,8 @@ int	 server_set_stdin_callback(struct client *, void (*)(struct client *,
 	     int, void *), void *, char **);
 void	 server_unzoom_window(struct window *);
 
-//void     server_push_gasket(struct client *c);
-//void	 gasket_server_update_event(struct client *);
+void     server_push_gasket(struct client *c);
+void	 gasket_server_update_event(struct client *);
 
 /* status.c */
 int	 status_out_cmp(struct status_out *, struct status_out *);
@@ -2304,7 +2304,7 @@ void	control_callback(struct client *, int, void*);
 void printflike2 control_write(struct client *, const char *, ...);
 void	control_write_buffer(struct client *, struct evbuffer *);
 
-//void    gasket_control_write_buffer(struct client *c, struct evbuffer *buffer);
+void    gasket_control_write_buffer(struct client *c, struct evbuffer *buffer);
 
 /* control-notify.c */
 void	control_notify_input(struct client *, struct window_pane *,
@@ -2318,8 +2318,8 @@ void	control_notify_session_renamed(struct session *);
 void	control_notify_session_created(struct session *);
 void	control_notify_session_close(struct session *);
 
-//void	gasket_control_notify_input(struct client *, struct window_pane *,
-//	    struct evbuffer *);
+void	gasket_control_notify_input(struct client *, struct window_pane *,
+	    struct evbuffer *);
 
 /* session.c */
 extern struct sessions sessions;
