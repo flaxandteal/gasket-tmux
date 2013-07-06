@@ -16,3 +16,4 @@ Makefile
 Makefile.in
 configure
 tmux.1.*
+*.log
