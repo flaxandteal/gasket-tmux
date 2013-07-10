@@ -1317,6 +1317,7 @@ struct client {
 	struct event	 gasket_event;
         struct evbuffer *gasket_data;
         int              gasket_fd;
+        struct imsgbuf   gasket_ibuf;
 
 	struct event	 repeat_timer;
 
@@ -1920,14 +1921,14 @@ void	 gasket_server_update_socket(void);
 
 /* server-client.c */
 void	 server_client_handle_key(struct client *, int);
-void	 server_client_create(int);
+void	 server_client_create(int, int);
 int      server_client_open(struct client *, struct session *, char **);
 void	 server_client_lost(struct client *);
 void	 server_client_callback(int, short, void *);
 void	 server_client_status_timer(void);
 void	 server_client_loop(void);
 
-void	 gasket_server_client_create(int);
+void	 gasket_server_client_create(struct client *, int);
 void	 gasket_server_client_callback(int, short, void *);
 
 /* server-window.c */

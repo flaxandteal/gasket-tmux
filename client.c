@@ -34,7 +34,7 @@
 #include "tmux.h"
 
 struct imsgbuf	client_ibuf;
-int    	        gasket_client_fd;
+int    	        gasket_out_fd;
 struct event	client_event;
 struct event	client_stdin;
 
@@ -69,9 +69,11 @@ int		client_dispatch_attached(void);
 int		client_dispatch_wait(void *);
 const char     *client_exit_message(void);
 
+void		gasket_client_update_event(void);
 int		gasket_client_dispatch_attached(void);
 int		gasket_client_dispatch_wait(void *);
 void		gasket_client_callback(int, short, void *);
+int             gasket_out_create_socket(void);
 
 /*
  * Get server create lock. If already held then server start is happening in
@@ -128,19 +130,22 @@ retry:
 	if ((fds[1] = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		fatal("gasket socket failed");
 
-	if (connect(fds[0], (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1 &&
+	if (connect(fds[0], (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1 ||
 	    connect(fds[1], (struct sockaddr *) &gasket_sa, SUN_LEN(&gasket_sa)) == -1) {
+            //FIXME: chk both
 		if (errno != ECONNREFUSED && errno != ENOENT)
 			goto failed;
 		if (!start_server)
 			goto failed;
 		close(fds[0]);
-		//close(fds[1]);
+		close(fds[1]);
 
 		xasprintf(&lockfile, "%s.lock", path);
 		if ((lockfd = client_get_lock(lockfile)) == -1)
 			goto retry;
 		if (unlink(path) != 0 && errno != ENOENT)
+			return (-1);
+		if (unlink(gasket_path) != 0 && errno != ENOENT)
 			return (-1);
 		server_start(fds, lockfd, lockfile);
 		free(lockfile);
@@ -148,12 +153,12 @@ retry:
 	}
 
 	setblocking(fds[0], 0);
-	//setblocking(fds[1], 0);
+	setblocking(fds[1], 0);
 	return (0);
 
 failed:
 	close(fds[0]);
-	//close(fds[1]);
+	close(fds[1]);
 	return (-1);
 }
 
@@ -182,6 +187,7 @@ client_exit_message(void)
 	return ("unknown reason");
 }
 
+        FILE *f;
 /* Client main loop. */
 int
 client_main(int argc, char **argv, int flags)
@@ -195,6 +201,9 @@ client_main(int argc, char **argv, int flags)
 	char			*cause;
 	struct termios		 tio, saved_tio;
 
+
+
+        f=fopen("/tmp/testa", "a");
 	/* Set up the initial command. */
 	cmdflags = 0;
 	if (shell_cmd != NULL) {
@@ -256,7 +265,8 @@ client_main(int argc, char **argv, int flags)
 	/* Create imsg. */
 	imsg_init(&client_ibuf, fds[0]);
 	event_set(&client_event, fds[0], EV_READ, client_callback, shell_cmd);
-	gasket_client_fd = fds[1];
+	//gasket_client_fd = fds[1];
+	imsg_init(&gasket_client_ibuf, fds[1]);
 	event_set(&gasket_client_event, fds[1], EV_READ, gasket_client_callback, NULL);
 
 	/* Create stdin handler. */
@@ -286,6 +296,8 @@ client_main(int argc, char **argv, int flags)
 	/* Establish signal handlers. */
 	set_signals(client_signal);
 
+        gasket_out_fd = gasket_out_create_socket();
+
 	/* Send initial environment. */
 	if (cmdflags & CMD_SENDENVIRON)
 		client_send_environ();
@@ -311,6 +323,7 @@ client_main(int argc, char **argv, int flags)
 
 	/* Set the event and dispatch. */
 	client_update_event();
+	gasket_client_update_event();
 	event_dispatch();
 
 	/* Print the exit message, if any, and exit. */
@@ -332,7 +345,53 @@ client_main(int argc, char **argv, int flags)
 		tcsetattr(STDOUT_FILENO, TCSAFLUSH, &saved_tio);
 	}
 	setblocking(STDIN_FILENO, 1);
+        fclose(f);
 	return (client_exitval);
+}
+
+/* Create Gasket server socket. */
+int
+gasket_out_create_socket(void)
+{
+	struct sockaddr_un	sa;
+	size_t			size;
+	mode_t			mask;
+	int			fd;
+        char*                   gasket_out_path;
+
+        gasket_out_path = getenv("GASKET_SOCKET");
+
+        if (strlen(gasket_out_path) == 0) {
+                return (-1);
+        }
+
+	memset(&sa, 0, sizeof sa);
+	sa.sun_family = AF_UNIX;
+	size = strlcpy(sa.sun_path, gasket_out_path, sizeof sa.sun_path);
+	if (size >= sizeof sa.sun_path) {
+		errno = ENAMETOOLONG;
+		return (-1);
+	}
+
+	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
+		return (-1);
+
+	if (connect(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1)
+        {
+		fprintf(stderr, "%dsessions should be nested with care, "
+		    "unset $TMUX to force\n", errno);
+		fatal("gasket failed");
+		return (-1);
+        }
+
+	setblocking(fd, 1);
+
+	struct msg_stdout_data	stdoutdata;
+        sprintf(stdoutdata.data, "%s", "\n__GASKET_SOCKET__\n");
+        stdoutdata.size = sizeof(char)*strlen("\n__GASKET_SOCKET__\n");
+        client_write(fd, stdoutdata.data, stdoutdata.size);
+
+	return (fd);
 }
 
 /* Send identify message to server with the file descriptors. */
@@ -358,6 +417,7 @@ client_send_identify(int flags)
 	imsg_compose(&client_ibuf,
 	    MSG_IDENTIFY, PROTOCOL_VERSION, -1, fd, &data, sizeof data);
 	client_update_event();
+	gasket_client_update_event();
 }
 
 /* Forward entire environment to server. */
@@ -380,6 +440,19 @@ client_write_server(enum msgtype type, void *buf, size_t len)
 {
 	imsg_compose(&client_ibuf, type, PROTOCOL_VERSION, -1, -1, buf, len);
 	client_update_event();
+}
+
+/* Update gasket_client event based on whether it needs to read or read and write. */
+void
+gasket_client_update_event(void)
+{
+	short	events;
+
+	event_del(&gasket_client_event);
+        events = EV_READ;
+	event_set(
+	    &gasket_client_event, gasket_client_ibuf.fd, events, gasket_client_callback, NULL);
+	event_add(&gasket_client_event, NULL);
 }
 
 /* Update client event based on whether it needs to read or read and write. */
@@ -483,30 +556,18 @@ gasket_client_callback(unused int fd, short events, void *data)
 {
 	ssize_t	n;
 	int	retval;
-	char	buf[CMSG_SPACE(sizeof(int) * 16)];
 
 	if (events & EV_READ) {
-                if ((n = recvfrom(gasket_client_fd, buf, sizeof(buf), 0, NULL, NULL)) == -1) {
-                        if (errno != EINTR && errno != EAGAIN) {
-                                goto lost_server;
-                        }
-                }
-		if (client_attached)
-			retval = gasket_client_dispatch_attached();
-		else
-			retval = gasket_client_dispatch_wait(data);
+		if ((n = imsg_read(&gasket_client_ibuf)) == -1 || n == 0)
+			goto lost_server;
+		retval = gasket_client_dispatch_wait(data);
 		if (retval != 0) {
 			event_loopexit(NULL);
 			return;
 		}
 	}
 
-	if (events & EV_WRITE) {
-		if (msgbuf_write(&gasket_client_ibuf.w) < 0)
-			goto lost_server;
-	}
-
-	client_update_event();
+	gasket_client_update_event();
 	return;
 
 lost_server:
@@ -726,180 +787,38 @@ client_dispatch_attached(void)
 	}
 }
 
+int i = 0;
 /* Dispatch imsgs when in wait state (before MSG_READY). */
 int
 gasket_client_dispatch_wait(void *data)
 {
-}
-//	struct imsg		imsg;
-//	ssize_t			n, datalen;
-//	struct msg_shell_data	shelldata;
-//	struct msg_exit_data	exitdata;
-//	struct msg_stdout_data	stdoutdata;
-//	struct msg_stderr_data	stderrdata;
-//	const char             *shellcmd = data;
-//
-//	for (;;) {
-//		if ((n = imsg_get(&client_ibuf, &imsg)) == -1)
-//			fatalx("imsg_get failed");
-//		if (n == 0)
-//			return (0);
-//		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
-//
-//		log_debug("got %d from server", imsg.hdr.type);
-//		switch (imsg.hdr.type) {
-//		case MSG_EXIT:
-//		case MSG_SHUTDOWN:
-//			if (datalen != sizeof exitdata) {
-//				if (datalen != 0)
-//					fatalx("bad MSG_EXIT size");
-//			} else {
-//				memcpy(&exitdata, imsg.data, sizeof exitdata);
-//				client_exitval = exitdata.retcode;
-//			}
-//			imsg_free(&imsg);
-//			return (-1);
-//		case MSG_READY:
-//			if (datalen != 0)
-//				fatalx("bad MSG_READY size");
-//
-//			event_del(&client_stdin);
-//			client_attached = 1;
-//			client_write_server(MSG_RESIZE, NULL, 0);
-//			break;
-//		case MSG_STDIN:
-//			if (datalen != 0)
-//				fatalx("bad MSG_STDIN size");
-//
-//			event_add(&client_stdin, NULL);
-//			break;
-//		case MSG_STDOUT:
-//			if (datalen != sizeof stdoutdata)
-//				fatalx("bad MSG_STDOUT");
-//			memcpy(&stdoutdata, imsg.data, sizeof stdoutdata);
-//
-//			client_write(STDOUT_FILENO, stdoutdata.data, stdoutdata.size);
-//			break;
-//		case MSG_STDERR:
-//			if (datalen != sizeof stderrdata)
-//				fatalx("bad MSG_STDERR");
-//			memcpy(&stderrdata, imsg.data, sizeof stderrdata);
-//
-//			client_write(STDERR_FILENO, stderrdata.data, stderrdata.size);
-//			break;
-//		case MSG_VERSION:
-//			if (datalen != 0)
-//				fatalx("bad MSG_VERSION size");
-//
-//			fprintf(stderr, "protocol version mismatch "
-//			    "(client %u, server %u)\n", PROTOCOL_VERSION,
-//			    imsg.hdr.peerid);
-//			client_exitval = 1;
-//
-//			imsg_free(&imsg);
-//			return (-1);
-//		case MSG_SHELL:
-//			if (datalen != sizeof shelldata)
-//				fatalx("bad MSG_SHELL size");
-//			memcpy(&shelldata, imsg.data, sizeof shelldata);
-//			shelldata.shell[(sizeof shelldata.shell) - 1] = '\0';
-//
-//			clear_signals(0);
-//
-//			shell_exec(shelldata.shell, shellcmd);
-//			/* NOTREACHED */
-//		case MSG_DETACH:
-//			client_write_server(MSG_EXITING, NULL, 0);
-//			break;
-//		case MSG_EXITED:
-//			imsg_free(&imsg);
-//			return (-1);
-//		default:
-//			fatalx("unexpected message");
-//		}
-//
-//		imsg_free(&imsg);
-//	}
-//}
+	struct imsg		imsg;
+	ssize_t			n, datalen;
+	struct msg_shell_data	shelldata;
+	struct msg_exit_data	exitdata;
+	struct msg_stdout_data	stdoutdata;
+	struct msg_stderr_data	stderrdata;
+	const char             *shellcmd = data;
 
-/* Dispatch imsgs in attached state (after MSG_READY). */
-int
-gasket_client_dispatch_attached(void)
-{
+	for (;;) {
+		if ((n = imsg_get(&gasket_client_ibuf, &imsg)) == -1)
+			fatalx("imsg_get failed");
+		if (n == 0)
+			return (0);
+		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
+
+		log_debug("got %d from server", imsg.hdr.type);
+		switch (imsg.hdr.type) {
+		case MSG_STDOUT:
+			memcpy(&stdoutdata, imsg.data, sizeof stdoutdata);
+                        if (gasket_out_fd != -1) {
+                            client_write(gasket_out_fd, stdoutdata.data, stdoutdata.size);
+                        }
+			break;
+		default:
+			fatalx("unexpected message");
+		}
+
+		imsg_free(&imsg);
+	}
 }
-//	struct imsg		imsg;
-//	struct msg_lock_data	lockdata;
-//	struct sigaction	sigact;
-//	ssize_t			n, datalen;
-//
-//	for (;;) {
-//		if ((n = imsg_get(&client_ibuf, &imsg)) == -1)
-//			fatalx("imsg_get failed");
-//		if (n == 0)
-//			return (0);
-//		datalen = imsg.hdr.len - IMSG_HEADER_SIZE;
-//
-//		log_debug("got %d from server", imsg.hdr.type);
-//		switch (imsg.hdr.type) {
-//		case MSG_DETACHKILL:
-//		case MSG_DETACH:
-//			if (datalen != 0)
-//				fatalx("bad MSG_DETACH size");
-//
-//			client_exittype = imsg.hdr.type;
-//			if (imsg.hdr.type == MSG_DETACHKILL)
-//				client_exitreason = CLIENT_EXIT_DETACHED_HUP;
-//			else
-//				client_exitreason = CLIENT_EXIT_DETACHED;
-//			client_write_server(MSG_EXITING, NULL, 0);
-//			break;
-//		case MSG_EXIT:
-//			if (datalen != 0 &&
-//			    datalen != sizeof (struct msg_exit_data))
-//				fatalx("bad MSG_EXIT size");
-//
-//			client_write_server(MSG_EXITING, NULL, 0);
-//			client_exitreason = CLIENT_EXIT_EXITED;
-//			break;
-//		case MSG_EXITED:
-//			if (datalen != 0)
-//				fatalx("bad MSG_EXITED size");
-//
-//			imsg_free(&imsg);
-//			return (-1);
-//		case MSG_SHUTDOWN:
-//			if (datalen != 0)
-//				fatalx("bad MSG_SHUTDOWN size");
-//
-//			client_write_server(MSG_EXITING, NULL, 0);
-//			client_exitreason = CLIENT_EXIT_SERVER_EXITED;
-//			client_exitval = 1;
-//			break;
-//		case MSG_SUSPEND:
-//			if (datalen != 0)
-//				fatalx("bad MSG_SUSPEND size");
-//
-//			memset(&sigact, 0, sizeof sigact);
-//			sigemptyset(&sigact.sa_mask);
-//			sigact.sa_flags = SA_RESTART;
-//			sigact.sa_handler = SIG_DFL;
-//			if (sigaction(SIGTSTP, &sigact, NULL) != 0)
-//				fatal("sigaction failed");
-//			kill(getpid(), SIGTSTP);
-//			break;
-//		case MSG_LOCK:
-//			if (datalen != sizeof lockdata)
-//				fatalx("bad MSG_LOCK size");
-//			memcpy(&lockdata, imsg.data, sizeof lockdata);
-//
-//			lockdata.cmd[(sizeof lockdata.cmd) - 1] = '\0';
-//			system(lockdata.cmd);
-//			client_write_server(MSG_UNLOCK, NULL, 0);
-//			break;
-//		default:
-//			fatalx("unexpected message");
-//		}
-//
-//		imsg_free(&imsg);
-//	}
-//}

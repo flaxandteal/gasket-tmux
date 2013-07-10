@@ -146,7 +146,7 @@ gasket_notify_input(struct window_pane *wp, struct evbuffer *input)
 
 	for (i = 0; i < ARRAY_LENGTH(&clients); i++) {
 		c = ARRAY_ITEM(&clients, i);
-		if (c != NULL && (c->flags & CLIENT_CONTROL))
+		if (c != NULL)
 			gasket_control_notify_input(c, wp, input);
 	}
 }

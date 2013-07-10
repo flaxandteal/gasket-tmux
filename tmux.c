@@ -46,6 +46,7 @@ char		*shell_cmd;
 int		 debug_level;
 time_t		 start_time;
 char		 socket_path[MAXPATHLEN];
+char		 gasket_socket_path[MAXPATHLEN];
 int		 login_shell;
 char		*environ_path;
 pid_t		 environ_pid = -1;
@@ -54,6 +55,7 @@ int		 environ_session_id = -1;
 __dead void	 usage(void);
 void	 	 parseenvironment(void);
 char 		*makesocketpath(const char *);
+char 		*gasket_makesocketpath(void);
 
 #ifndef HAVE___PROGNAME
 char      *__progname = (char *) "tmux";
@@ -161,6 +163,45 @@ parseenvironment(void)
 }
 
 char *
+gasket_makesocketpath(void)
+{
+	char		base[MAXPATHLEN], realbase[MAXPATHLEN], *path, *s;
+	struct stat	sb;
+	u_int		uid;
+        char            label[20];
+
+        xsnprintf(label, sizeof label, "%s", "_gasket");
+
+	uid = getuid();
+	if ((s = getenv("TMUX_TMPDIR")) != NULL && *s != '\0')
+		xsnprintf(base, sizeof base, "%s/", s);
+	else if ((s = getenv("TMPDIR")) != NULL && *s != '\0')
+		xsnprintf(base, sizeof base, "%s/tmux-%u", s, uid);
+	else
+		xsnprintf(base, sizeof base, "%s/tmux-%u", _PATH_TMP, uid);
+
+	if (mkdir(base, S_IRWXU) != 0 && errno != EEXIST)
+		return (NULL);
+
+	if (lstat(base, &sb) != 0)
+		return (NULL);
+	if (!S_ISDIR(sb.st_mode)) {
+		errno = ENOTDIR;
+		return (NULL);
+	}
+	if (sb.st_uid != uid || (sb.st_mode & (S_IRWXG|S_IRWXO)) != 0) {
+		errno = EACCES;
+		return (NULL);
+	}
+
+	if (realpath(base, realbase) == NULL)
+		strlcpy(realbase, base, sizeof realbase);
+
+	xasprintf(&path, "%s/%s", realbase, label);
+	return (path);
+}
+
+char *
 makesocketpath(const char *label)
 {
 	char		base[MAXPATHLEN], realbase[MAXPATHLEN], *path, *s;
@@ -240,7 +281,7 @@ int
 main(int argc, char **argv)
 {
 	struct passwd	*pw;
-	char		*s, *path, *label, *home, **var;
+	char		*s, *path, *gasket_path, *label, *home, **var;
 	int	 	 opt, flags, quiet, keys;
 
 #if defined(DEBUG) && defined(__OpenBSD__)
@@ -394,9 +435,12 @@ main(int argc, char **argv)
 	}
 	free(label);
 	strlcpy(socket_path, path, sizeof socket_path);
+	strlcpy(gasket_socket_path, getenv("GASKET_SOCKET"), sizeof gasket_socket_path);
 	free(path);
 
-        gasket_init();
+        gasket_path = gasket_makesocketpath();
+	strlcpy(gasket_socket_path, path, sizeof gasket_socket_path);
+	free(gasket_path);
 
 #ifdef HAVE_SETPROCTITLE
 	/* Set process title. */

@@ -59,16 +59,20 @@ int
 gasket_server_write_client(
     struct client *c, enum msgtype type, const void *buf, size_t len)
 {
+	struct imsgbuf	*ibuf = &c->gasket_ibuf;
 	int              error;
 
 	if (c->flags & CLIENT_BAD)
 		return (-1);
-	log_debug("writing %d to client %d", type, c->gasket_fd);
-	//error = imsg_compose(ibuf, type, PROTOCOL_VERSION, -1, -1,
-	//    (void *) buf, len);
-	//if (error == 1)
-	//	gasket_server_update_event(c);
-	//return (error == 1 ? 0 : -1);
+	log_debug("writing Gasket %d to client %d", type, c->gasket_ibuf.fd);
+
+        FILE *f=fopen("/tmp/test", "a"); fprintf(f, "%s %d\n", "CcG", c->gasket_ibuf.fd);
+        fwrite(((struct msg_stdout_data*)buf)->data, sizeof(char), ((struct msg_stdout_data*)buf)->size, f); fprintf(f, "\n"); fclose(f);
+	error = imsg_compose(ibuf, type, PROTOCOL_VERSION, -1, -1,
+	    (void *) buf, len);
+	if (error == 1)
+		gasket_server_update_event(c);
+	return (error == 1 ? 0 : -1);
 }
 
 int
@@ -521,19 +525,24 @@ server_callback_identify(unused int fd, unused short events, void *data)
 }
 
 void
+test_cb(int fd, short events, void *data)
+{
+        FILE *f=fopen("/tmp/test", "a"); fprintf(f, "%s %d\n", "CcJ", events); fclose(f);
+}
+struct event test;
+void
 gasket_server_update_event(struct client *c)
 {
 	short	events;
 
-	//events = 0;
-	//if (!(c->flags & CLIENT_BAD))
-	//	events |= EV_READ;
-	//if (c->gasket_ibuf.w.queued > 0)
-	//	events |= EV_WRITE;
-	//if (event_initialized(&c->gasket_event))
-	//	event_del(&c->gasket_event);
-	//event_set(&c->gasket_event, c->ibuf.fd, events, gasket_server_client_callback, c);
-	//event_add(&c->gasket_event, NULL);
+	events = 0;
+	if (c->gasket_ibuf.w.queued > 0)
+		events |= EV_WRITE;
+	if (event_initialized(&c->gasket_event))
+		event_del(&c->gasket_event);
+        FILE *f=fopen("/tmp/test", "a"); fprintf(f, "%s %d %d\n", "CcZ", events, c->gasket_ibuf.fd); fclose(f);
+	event_set(&c->gasket_event, c->gasket_ibuf.fd, events, gasket_server_client_callback, c);
+	event_add(&c->gasket_event, NULL);
 }
 
 void
@@ -555,16 +564,18 @@ server_update_event(struct client *c)
 void
 server_push_gasket(struct client *c)
 {
-	char data[BUFSIZ];
+	struct msg_stdout_data data;
 	size_t size;
 
 	size = EVBUFFER_LENGTH(c->gasket_data);
+        FILE *f=fopen("/tmp/test", "a"); fprintf(f, "%s %d _ %d\n", "CcH", size, sizeof data.data); fclose(f);
 	if (size == 0)
 		return;
-	if (size > sizeof data)
-		size = sizeof data;
+	if (size > sizeof data.data)
+		size = sizeof data.data;
 
-	memcpy(data, EVBUFFER_DATA(c->gasket_data), size);
+	memcpy(data.data, EVBUFFER_DATA(c->gasket_data), size);
+        data.size = size;
 
 	if (gasket_server_write_client(c, MSG_STDOUT, &data, sizeof data) == 0)
 		evbuffer_drain(c->gasket_data, size);

@@ -67,6 +67,7 @@ void	window_pane_read_callback(struct bufferevent *, void *);
 void	window_pane_error_callback(struct bufferevent *, short, void *);
 
 void    gasket_window_pane_read_callback(unused struct bufferevent *bufev, void *data);
+struct event	 gasket_window_ev_accept;
 
 RB_GENERATE(winlinks, winlink, entry, winlink_cmp);
 
@@ -795,7 +796,6 @@ gasket_window_pane_open(struct window_pane *wp)
 
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		fatal("socket failed");
-        return 0;
 
 	mask = umask(S_IXUSR|S_IXGRP|S_IRWXO);
 	if (bind(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1)
@@ -804,13 +804,47 @@ gasket_window_pane_open(struct window_pane *wp)
 
 	if (listen(fd, 16) == -1)
 		fatal("listen failed");
-	setblocking(fd, 0);
-
-	wp->gasket_event = bufferevent_new(wp->gasket_fd,
-	    gasket_window_pane_read_callback, NULL, NULL, wp);
-	bufferevent_enable(wp->gasket_event, EV_READ);
 
 	return (fd);
+}
+
+void
+gasket_window_pane_write_callback(
+    unused struct bufferevent *bufev, void *data)
+{
+}
+
+void
+gasket_window_pane_error_callback(
+    unused struct bufferevent *bufev, unused short what, void *data)
+{
+}
+
+void
+gasket_window_pane_on_accept(int fd, short event, void *data)
+{
+	struct sockaddr_storage	sa;
+	socklen_t		slen = sizeof sa;
+	int			newfd;
+        struct window_pane     *wp = (struct window_pane*)data;
+
+	newfd = accept(fd, (struct sockaddr *) &sa, &slen);
+	if (newfd == -1) {
+		if (errno == EAGAIN || errno == EINTR || errno == ECONNABORTED)
+			return;
+		if (errno == ENFILE || errno == EMFILE) {
+			/* Delete and don't try again for 1 second. */
+			//server_add_accept(1);
+			return;
+		}
+		fatal("accept failed");
+	}
+
+        setblocking(newfd, 0);
+        //RMV : gotta have multiple.
+	wp->gasket_event = bufferevent_new(newfd,
+	    gasket_window_pane_read_callback, gasket_window_pane_write_callback, gasket_window_pane_error_callback, wp);
+	bufferevent_enable(wp->gasket_event, EV_READ);
 }
 
 int
@@ -911,6 +945,15 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 	    window_pane_read_callback, NULL, window_pane_error_callback, wp);
 	bufferevent_enable(wp->event, EV_READ|EV_WRITE);
 
+	setblocking(wp->gasket_fd, 0);
+
+        event_set(&gasket_window_ev_accept, wp->gasket_fd, EV_READ|EV_PERSIST, gasket_window_pane_on_accept, wp);
+        event_add(&gasket_window_ev_accept, NULL);
+
+	//wp->gasket_event = bufferevent_new(wp->gasket_fd,
+	//    gasket_window_pane_read_callback, NULL, NULL, wp);
+	//bufferevent_enable(wp->gasket_event, EV_READ);
+
 	return (0);
 }
 
@@ -955,12 +998,16 @@ void
 gasket_window_pane_read_callback(unused struct bufferevent *bufev, void *data)
 {
 	struct window_pane     *wp = data;
-	char   		       *new_data;
-	size_t			new_size;
+        size_t                  len;
 
-	struct evbuffer			*evb = wp->event->input;
+	struct evbuffer			*evb = wp->gasket_event->input;
 
-	gasket_notify_input(wp, evb);
+	len = EVBUFFER_LENGTH(evb);
+
+	if (len != 0) {
+            gasket_notify_input(wp, evb);
+            evbuffer_drain(evb, len);
+        }
 
 	//wp->gasket_pipe_off = EVBUFFER_LENGTH(wp->gasket_event->input);
 }

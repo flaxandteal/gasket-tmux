@@ -205,8 +205,7 @@ server_start(int fds[], int lockfd, char *lockfile)
 
 	server_fd = server_create_socket();
 	gasket_server_fd = gasket_server_create_socket();
-	server_client_create(pair[1]);
-	gasket_server_client_create(gasket_pair[1]);
+	server_client_create(pair[1], gasket_pair[1]);
 
 	unlink(lockfile);
 	free(lockfile);
@@ -433,7 +432,7 @@ server_accept_callback(int fd, short events, unused void *data)
 		close(newfd);
 		return;
 	}
-	server_client_create(newfd);
+	server_client_create(newfd, -1);
 }
 
 /*

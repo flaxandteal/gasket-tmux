@@ -47,17 +47,20 @@ void	server_client_msg_shell(struct client *);
 
 /* Create a new client. */
 void
-server_client_create(int fd)
+server_client_create(int fd, int gasket_fd)
 {
 	struct client	*c;
 	u_int		 i;
 
 	setblocking(fd, 0);
+	setblocking(gasket_fd, 0);
 
 	c = xcalloc(1, sizeof *c);
 	c->references = 0;
 	imsg_init(&c->ibuf, fd);
+	imsg_init(&c->gasket_ibuf, gasket_fd);
 	server_update_event(c);
+	gasket_server_update_event(c);
 
 	if (gettimeofday(&c->creation_time, NULL) != 0)
 		fatal("gettimeofday failed");
@@ -109,12 +112,13 @@ server_client_create(int fd)
 	}
 	ARRAY_ADD(&clients, c);
 	log_debug("new client %d", fd);
+
+        gasket_server_client_create(c, gasket_fd);
 }
 
 void
-gasket_server_client_create(int fd)
+gasket_server_client_create(struct client *c, int fd)
 {
-	struct client	*c;
 	u_int		 i;
 
 	c->gasket_fd = fd;
@@ -199,7 +203,9 @@ server_client_lost(struct client *c)
 	environ_free(&c->environ);
 
 	close(c->ibuf.fd);
+	close(c->gasket_ibuf.fd);
 	imsg_clear(&c->ibuf);
+	imsg_clear(&c->gasket_ibuf);
 	if (event_initialized(&c->event))
 		event_del(&c->event);
 
@@ -225,36 +231,26 @@ void
 gasket_server_client_callback(int fd, short events, void *data)
 {
 	struct client	*c = data;
+        FILE *f=fopen("/tmp/test", "a"); fprintf(f, "- %d\n", c); fclose(f);
+              f=fopen("/tmp/test", "a"); fprintf(f, "-- %d\n", c->gasket_ibuf.w.queued); fclose(f);
 
 	if (c->flags & CLIENT_DEAD)
 		return;
 
-	//if (fd == c->gasket_ibuf.fd) {
-                int n;
-                if ((n = sendto(c->gasket_fd, data, strlen((char*)data), 0, NULL, 0)) == -1) {
-                        if (errno != EAGAIN && errno != ENOBUFS ||
-                            errno != EINTR)	/* try later */
-                                goto client_lost;
-                }
+	if (fd == c->gasket_ibuf.fd) {
+		if (events & EV_WRITE && msgbuf_write(&c->gasket_ibuf.w) < 0)
+			goto client_lost;
 
-                if (n == 0) {			/* connection closed */
-                        errno = 0;
-                        goto client_lost;
-                }
+		if (c->flags & CLIENT_BAD) {
+			if (c->gasket_ibuf.w.queued == 0)
+				goto client_lost;
+			return;
+		}
+	}
 
-                /*
-                 * assumption: fd got sent if sendmsg sent anything
-                 * this works because fds are passed one at a time
-                 */
-                //if (c->gasket_ibuf.fd != -1) {
-                //        close(c->gasket_ibuf.fd);
-                //        c->gasket_ibuf.fd = -1;
-                //}
-	//}
+	server_push_gasket(c);
 
-	//server_push_gasket(c);
-
-	//gasket_server_update_event(c);
+	gasket_server_update_event(c);
 	return;
 
 client_lost:
