@@ -361,7 +361,7 @@ gasket_out_create_socket(void)
 
         gasket_out_path = getenv("GASKET_SOCKET");
 
-        if (strlen(gasket_out_path) == 0) {
+        if (gasket_out_path == NULL) {
                 return (-1);
         }
 

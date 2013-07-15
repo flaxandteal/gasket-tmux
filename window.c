@@ -699,9 +699,6 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	wp->pipe_event = NULL;
 
         wp->gasket_fd = -1;
-        //wp->gasket_pipe_off = 0;
-        //wp->gasket_pipe_event = NULL;
-        wp->gasket_event = NULL;
 
 	wp->saved_grid = NULL;
 
@@ -716,6 +713,8 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 void
 window_pane_destroy(struct window_pane *wp)
 {
+	struct gasket_event *ev;
+
 	window_pane_reset_mode(wp);
 
 	if (event_initialized(&wp->changes_timer))
@@ -727,7 +726,9 @@ window_pane_destroy(struct window_pane *wp)
 	}
 
 	if (wp->gasket_fd != -1) {
-		bufferevent_free(wp->gasket_event);
+                TAILQ_FOREACH(ev, &wp->gasket_events, entry) {
+                        bufferevent_free(ev->event);
+                }
 		close(wp->gasket_fd);
 	}
 
@@ -772,8 +773,8 @@ gasket_window_pane_open(struct window_pane *wp)
         char gasket_directory[MAXPATHLEN];
 
         xsnprintf(gasket_directory, sizeof gasket_directory,
-                "/tmp/gasket-tmux-wp%d/",
-                wp->id);
+                "/tmp/gasket-tmux-%d/",
+                getpid());
 
         if (mkdir(gasket_directory, S_IRWXU) == -1 && errno != EEXIST)
         {
@@ -795,15 +796,15 @@ gasket_window_pane_open(struct window_pane *wp)
 	unlink(sa.sun_path);
 
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
-		fatal("socket failed");
+		return (-1);
 
 	mask = umask(S_IXUSR|S_IXGRP|S_IRWXO);
 	if (bind(fd, (struct sockaddr *) &sa, SUN_LEN(&sa)) == -1)
-		fatal("bind failed");
+		return (-1);
 	umask(mask);
 
 	if (listen(fd, 16) == -1)
-		fatal("listen failed");
+		return (-1);
 
 	return (fd);
 }
@@ -827,6 +828,7 @@ gasket_window_pane_on_accept(int fd, short event, void *data)
 	socklen_t		slen = sizeof sa;
 	int			newfd;
         struct window_pane     *wp = (struct window_pane*)data;
+        struct gasket_event    *ev;
 
 	newfd = accept(fd, (struct sockaddr *) &sa, &slen);
 	if (newfd == -1) {
@@ -842,9 +844,10 @@ gasket_window_pane_on_accept(int fd, short event, void *data)
 
         setblocking(newfd, 0);
         //RMV : gotta have multiple.
-	wp->gasket_event = bufferevent_new(newfd,
-	    gasket_window_pane_read_callback, gasket_window_pane_write_callback, gasket_window_pane_error_callback, wp);
-	bufferevent_enable(wp->gasket_event, EV_READ);
+	ev = xcalloc(1, sizeof *ev);
+	ev->event = bufferevent_new(newfd, gasket_window_pane_read_callback, NULL, NULL, wp);
+	bufferevent_enable(ev->event, EV_READ);
+	TAILQ_INSERT_HEAD(&wp->gasket_events, ev, entry);
 }
 
 int
@@ -855,13 +858,16 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
 	char		*argv0, paneid[16];
 	const char	*ptr;
 	struct termios	 tio2;
+        struct gasket_event *ev;
 
 	if (wp->fd != -1) {
 		bufferevent_free(wp->event);
 		close(wp->fd);
 	}
 	if (wp->gasket_fd != -1) {
-		bufferevent_free(wp->gasket_event);
+                TAILQ_FOREACH(ev, &wp->gasket_events, entry) {
+                        bufferevent_free(ev->event);
+                }
 		close(wp->gasket_fd);
 	}
 	if (cmd != NULL) {
@@ -950,10 +956,6 @@ window_pane_spawn(struct window_pane *wp, const char *cmd, const char *shell,
         event_set(&gasket_window_ev_accept, wp->gasket_fd, EV_READ|EV_PERSIST, gasket_window_pane_on_accept, wp);
         event_add(&gasket_window_ev_accept, NULL);
 
-	//wp->gasket_event = bufferevent_new(wp->gasket_fd,
-	//    gasket_window_pane_read_callback, NULL, NULL, wp);
-	//bufferevent_enable(wp->gasket_event, EV_READ);
-
 	return (0);
 }
 
@@ -1000,7 +1002,7 @@ gasket_window_pane_read_callback(unused struct bufferevent *bufev, void *data)
 	struct window_pane     *wp = data;
         size_t                  len;
 
-	struct evbuffer			*evb = wp->gasket_event->input;
+	struct evbuffer			*evb = bufev->input;
 
 	len = EVBUFFER_LENGTH(evb);
 
@@ -1008,8 +1010,6 @@ gasket_window_pane_read_callback(unused struct bufferevent *bufev, void *data)
             gasket_notify_input(wp, evb);
             evbuffer_drain(evb, len);
         }
-
-	//wp->gasket_pipe_off = EVBUFFER_LENGTH(wp->gasket_event->input);
 }
 
 void

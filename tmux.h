@@ -919,6 +919,13 @@ struct window_choose_mode_item {
 #define TREE_EXPANDED 0x1
 };
 
+struct gasket_event {
+    struct bufferevent *event;
+    TAILQ_ENTRY(gasket_event) entry;
+};
+
+TAILQ_HEAD(gasket_events, gasket_event);
+
 /* Child window structure. */
 struct window_pane {
 	u_int		 id;
@@ -979,11 +986,13 @@ struct window_pane {
         char             gasket_id[MAXPATHLEN];
         char             gasket_socket[MAXPATHLEN];
         int              gasket_fd;
+        struct gasket_events gasket_events;
 	struct bufferevent *gasket_event;
 
 	TAILQ_ENTRY(window_pane) entry;
 	RB_ENTRY(window_pane) tree_entry;
 };
+
 TAILQ_HEAD(window_panes, window_pane);
 RB_HEAD(window_pane_tree, window_pane);
 

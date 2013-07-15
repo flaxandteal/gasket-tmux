@@ -435,7 +435,6 @@ main(int argc, char **argv)
 	}
 	free(label);
 	strlcpy(socket_path, path, sizeof socket_path);
-	strlcpy(gasket_socket_path, getenv("GASKET_SOCKET"), sizeof gasket_socket_path);
 	free(path);
 
         gasket_path = gasket_makesocketpath();
